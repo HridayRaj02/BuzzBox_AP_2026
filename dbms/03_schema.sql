@@ -1,121 +1,168 @@
+
 -- =====================================================================
--- BuzzBox — Netflix-inspired streaming service schema
--- Target engine: PostgreSQL 15 (runs on 14+)
+-- BuzzBox - Event Ticket Booking System
+-- Database: PostgreSQL
 --
--- Models accounts, household profiles, subscriptions, a movie and series
--- catalog, genres, watchlists, ratings, and viewing progress.
--- Run with: psql -d buzzbox -f dbms/03_schema.sql
+-- This database manages users, organizers, events, venues,
+-- ticket categories, bookings, payments and event entry.
 -- =====================================================================
 
 BEGIN;
 
+-- Users
+
 CREATE TABLE "User" (
-    "id"          BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    "fullName"    TEXT NOT NULL,
-    "email"       TEXT NOT NULL UNIQUE,
+    "id" BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    "fullName" TEXT NOT NULL,
+    "email" TEXT NOT NULL UNIQUE,
     "passwordHash" TEXT NOT NULL,
-    "createdAt"   TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+    "phone" VARCHAR(15),
+    "role" TEXT DEFAULT 'user'
+        CHECK ("role" IN ('user', 'organizer', 'admin')),
+    "createdAt" TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE TABLE "SubscriptionPlan" (
-    "id"              BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    "name"            TEXT NOT NULL UNIQUE,
-    "monthlyPrice"    NUMERIC(8,2) NOT NULL CHECK ("monthlyPrice" >= 0),
-    "maxProfiles"     SMALLINT NOT NULL CHECK ("maxProfiles" > 0),
-    "maxVideoQuality" TEXT NOT NULL CHECK ("maxVideoQuality" IN ('SD', 'HD', '4K'))
+-- Organizers
+
+CREATE TABLE "Organizer" (
+    "id" BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    "userId" BIGINT NOT NULL REFERENCES "User" ("id")
+        ON DELETE CASCADE,
+    "organizationName" TEXT NOT NULL,
+    "description" TEXT,
+    "contactEmail" TEXT NOT NULL
 );
 
-CREATE TABLE "Subscription" (
-    "id"        BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    "userId"    BIGINT NOT NULL REFERENCES "User" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
-    "planId"    BIGINT NOT NULL REFERENCES "SubscriptionPlan" ("id") ON DELETE RESTRICT ON UPDATE CASCADE,
-    "status"    TEXT NOT NULL DEFAULT 'active'
-                    CHECK ("status" IN ('active', 'paused', 'cancelled', 'expired')),
-    "startDate" DATE NOT NULL DEFAULT CURRENT_DATE,
-    "endDate"   DATE,
-    CHECK ("endDate" IS NULL OR "endDate" >= "startDate")
+-- Event categories
+
+CREATE TABLE "Category" (
+    "id" BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    "name" TEXT NOT NULL UNIQUE,
+    "description" TEXT
 );
 
-CREATE TABLE "Profile" (
-    "id"        BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    "userId"    BIGINT NOT NULL REFERENCES "User" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
-    "name"      TEXT NOT NULL,
-    "isKids"    BOOLEAN NOT NULL DEFAULT FALSE,
-    "createdAt" TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE ("userId", "name")
+-- Event venues
+
+CREATE TABLE "Venue" (
+    "id" BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    "name" TEXT NOT NULL,
+    "address" TEXT NOT NULL,
+    "city" TEXT NOT NULL,
+    "state" TEXT,
+    "capacity" INTEGER CHECK ("capacity" > 0)
 );
 
--- Catalog entries represent either a movie or a series.
-CREATE TABLE "Title" (
-    "id"              BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    "name"            TEXT NOT NULL,
-    "description"     TEXT,
-    "titleType"       TEXT NOT NULL CHECK ("titleType" IN ('movie', 'series')),
-    "releaseYear"     SMALLINT CHECK ("releaseYear" IS NULL OR "releaseYear" BETWEEN 1888 AND 2100),
-    "maturityRating"  TEXT,
-    "durationMinutes" INTEGER,
-    "createdAt"       TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    CHECK ("durationMinutes" IS NULL OR "durationMinutes" > 0),
-    CHECK ("titleType" <> 'movie' OR "durationMinutes" IS NOT NULL)
+-- Events
+
+CREATE TABLE "Event" (
+    "id" BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    "organizerId" BIGINT NOT NULL REFERENCES "Organizer" ("id"),
+    "venueId" BIGINT REFERENCES "Venue" ("id"),
+    "name" TEXT NOT NULL,
+    "description" TEXT,
+    "startDate" TIMESTAMPTZ NOT NULL,
+    "endDate" TIMESTAMPTZ NOT NULL,
+    "status" TEXT DEFAULT 'upcoming'
+        CHECK ("status" IN ('upcoming', 'ongoing', 'completed', 'cancelled')),
+    "bannerUrl" TEXT,
+    "createdAt" TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+    CHECK ("endDate" > "startDate")
 );
 
-CREATE TABLE "Episode" (
-    "id"              BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    "seriesId"        BIGINT NOT NULL REFERENCES "Title" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
-    "seasonNumber"    SMALLINT NOT NULL CHECK ("seasonNumber" > 0),
-    "episodeNumber"   SMALLINT NOT NULL CHECK ("episodeNumber" > 0),
-    "name"            TEXT NOT NULL,
-    "durationMinutes" INTEGER NOT NULL CHECK ("durationMinutes" > 0),
-    UNIQUE ("seriesId", "seasonNumber", "episodeNumber")
+CREATE TABLE "EventCategory" (
+    "eventId" BIGINT REFERENCES "Event" ("id") ON DELETE CASCADE,
+    "categoryId" BIGINT REFERENCES "Category" ("id") ON DELETE CASCADE,
+    PRIMARY KEY ("eventId", "categoryId")
 );
 
-CREATE TABLE "Genre" (
-    "id"   BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    "name" TEXT NOT NULL UNIQUE
+-- Ticket details
+
+CREATE TABLE "TicketType" (
+    "id" BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    "eventId" BIGINT NOT NULL REFERENCES "Event" ("id") ON DELETE CASCADE,
+    "name" TEXT NOT NULL,
+    "price" NUMERIC(10,2) NOT NULL CHECK ("price" >= 0),
+    "totalQuantity" INTEGER NOT NULL CHECK ("totalQuantity" > 0),
+    "availableQuantity" INTEGER NOT NULL CHECK ("availableQuantity" >= 0),
+    "saleStart" TIMESTAMPTZ,
+    "saleEnd" TIMESTAMPTZ
 );
 
-CREATE TABLE "TitleGenre" (
-    "titleId" BIGINT NOT NULL REFERENCES "Title" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
-    "genreId" BIGINT NOT NULL REFERENCES "Genre" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
-    PRIMARY KEY ("titleId", "genreId")
+-- Bookings
+
+CREATE TABLE "Booking" (
+    "id" BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    "userId" BIGINT NOT NULL REFERENCES "User" ("id"),
+    "eventId" BIGINT NOT NULL REFERENCES "Event" ("id"),
+    "bookingCode" TEXT NOT NULL UNIQUE,
+    "totalAmount" NUMERIC(10,2) NOT NULL CHECK ("totalAmount" >= 0),
+    "status" TEXT DEFAULT 'pending'
+        CHECK ("status" IN ('pending', 'confirmed', 'cancelled')),
+    "bookingDate" TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE TABLE "Watchlist" (
-    "profileId" BIGINT NOT NULL REFERENCES "Profile" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
-    "titleId"   BIGINT NOT NULL REFERENCES "Title" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
-    "addedAt"   TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    PRIMARY KEY ("profileId", "titleId")
+CREATE TABLE "BookingItem" (
+    "id" BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    "bookingId" BIGINT NOT NULL REFERENCES "Booking" ("id") ON DELETE CASCADE,
+    "ticketTypeId" BIGINT NOT NULL REFERENCES "TicketType" ("id"),
+    "quantity" INTEGER NOT NULL CHECK ("quantity" > 0),
+    "price" NUMERIC(10,2) NOT NULL CHECK ("price" >= 0)
 );
 
-CREATE TABLE "Rating" (
-    "profileId" BIGINT NOT NULL REFERENCES "Profile" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
-    "titleId"   BIGINT NOT NULL REFERENCES "Title" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
-    "score"     SMALLINT NOT NULL CHECK ("score" BETWEEN 1 AND 5),
-    "ratedAt"   TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    PRIMARY KEY ("profileId", "titleId")
+-- Payments
+
+CREATE TABLE "Payment" (
+    "id" BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    "bookingId" BIGINT NOT NULL REFERENCES "Booking" ("id"),
+    "transactionId" TEXT UNIQUE,
+    "paymentMethod" TEXT NOT NULL,
+    "amount" NUMERIC(10,2) NOT NULL CHECK ("amount" >= 0),
+    "status" TEXT DEFAULT 'pending'
+        CHECK ("status" IN ('pending', 'successful', 'failed', 'refunded')),
+    "paymentDate" TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 );
 
--- Exactly one of titleId (movie) or episodeId (series episode) is populated.
-CREATE TABLE "ViewingHistory" (
-    "id"              BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    "profileId"       BIGINT NOT NULL REFERENCES "Profile" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
-    "titleId"         BIGINT REFERENCES "Title" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
-    "episodeId"       BIGINT REFERENCES "Episode" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
-    "watchedAt"       TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    "progressSeconds" INTEGER NOT NULL DEFAULT 0 CHECK ("progressSeconds" >= 0),
-    "completed"       BOOLEAN NOT NULL DEFAULT FALSE,
-    CHECK (("titleId" IS NOT NULL AND "episodeId" IS NULL)
-        OR ("titleId" IS NULL AND "episodeId" IS NOT NULL))
+-- Individual tickets
+
+CREATE TABLE "Ticket" (
+    "id" BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    "bookingItemId" BIGINT NOT NULL REFERENCES "BookingItem" ("id"),
+    "ticketCode" TEXT NOT NULL UNIQUE,
+    "qrCode" UUID NOT NULL UNIQUE DEFAULT gen_random_uuid(),
+    "status" TEXT DEFAULT 'valid'
+        CHECK ("status" IN ('valid', 'used', 'cancelled'))
 );
 
-CREATE INDEX "Subscription_userId_status_idx" ON "Subscription" ("userId", "status");
-CREATE INDEX "Profile_userId_idx" ON "Profile" ("userId");
-CREATE INDEX "Title_titleType_idx" ON "Title" ("titleType");
-CREATE INDEX "Episode_seriesId_idx" ON "Episode" ("seriesId");
-CREATE INDEX "TitleGenre_genreId_idx" ON "TitleGenre" ("genreId");
-CREATE INDEX "Watchlist_titleId_idx" ON "Watchlist" ("titleId");
-CREATE INDEX "Rating_titleId_idx" ON "Rating" ("titleId");
-CREATE INDEX "ViewingHistory_profile_watchedAt_idx"
-    ON "ViewingHistory" ("profileId", "watchedAt" DESC);
+-- Event entry
+
+CREATE TABLE "CheckIn" (
+    "id" BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    "ticketId" BIGINT NOT NULL UNIQUE REFERENCES "Ticket" ("id"),
+    "checkedInAt" TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+    "checkedInBy" BIGINT REFERENCES "User" ("id")
+);
+
+-- Indexes
+
+CREATE INDEX "Event_organizerId_idx"
+    ON "Event" ("organizerId");
+
+CREATE INDEX "Event_startDate_idx"
+    ON "Event" ("startDate");
+
+CREATE INDEX "Booking_userId_idx"
+    ON "Booking" ("userId");
+
+CREATE INDEX "Booking_eventId_idx"
+    ON "Booking" ("eventId");
+
+CREATE INDEX "TicketType_eventId_idx"
+    ON "TicketType" ("eventId");
+
+CREATE INDEX "Payment_bookingId_idx"
+    ON "Payment" ("bookingId");
+
+CREATE INDEX "Ticket_bookingItemId_idx"
+    ON "Ticket" ("bookingItemId");
 
 COMMIT;
